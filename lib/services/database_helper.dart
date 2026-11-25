@@ -1,61 +1,177 @@
 import 'dart:async';
+import 'dart:io';
+import 'package:flutter/foundation.dart';
 import 'package:path/path.dart';
-import 'package:sqflite/sqflite.dart';
+import 'package:sqflite_common_ffi/sqflite_ffi.dart';
 import '../models/earthquake.dart';
 import '../models/checklist_item.dart';
 
-/// Database Helper (Singleton) untuk mengelola SQLite lokal aplikasi SiagaBumi
+/// Database Helper (Singleton) untuk mengelola penyimpanan lokal aplikasi SiagaBumi.
+/// Mendukung SQLite di Android, iOS, Windows Desktop (FFI), serta in-memory fallback untuk Web.
 class DatabaseHelper {
   static final DatabaseHelper instance = DatabaseHelper._init();
   static Database? _database;
+  static bool _ffiInitialized = false;
 
-  DatabaseHelper._init();
+  // In-memory fallback agar aplikasi selalu berfungsi di platform manapun (termasuk Web)
+  final List<Earthquake> _memoryWatchlist = [];
+  final List<ChecklistItem> _memoryChecklist = [];
+  bool _useMemoryFallback = false;
 
-  /// Getter database dengan inisialisasi lazy
-  Future<Database> get database async {
-    if (_database != null) return _database!;
-    _database = await _initDB('siagabumi.db');
-    return _database!;
+  DatabaseHelper._init() {
+    _initMemoryChecklist();
   }
 
-  /// Inisialisasi file SQLite database di path sistem aplikasi
+  /// Data awal tas siaga bencana (seeding)
+  static final List<Map<String, String>> _initialChecklistData = [
+    {'category': 'Dokumen & Finansial', 'item': 'Surat-surat berharga (KK, KTP, Ijazah, Polis Asuransi dlm plastik)'},
+    {'category': 'Dokumen & Finansial', 'item': 'Uang tunai secukupnya untuk kebutuhan darurat'},
+    {'category': 'Medis & Kesehatan', 'item': 'Kotak P3K standar (Kasa, Plester, Antiseptik, Parasetamol)'},
+    {'category': 'Medis & Kesehatan', 'item': 'Obat-obatan pribadi atau resep dokter'},
+    {'category': 'Medis & Kesehatan', 'item': 'Masker medis & pembersih tangan (Hand Sanitizer)'},
+    {'category': 'Logistik & Konsumsi', 'item': 'Air mineral kemasan (minimal 3 hari untuk tiap anggota keluarga)'},
+    {'category': 'Logistik & Konsumsi', 'item': 'Makanan siap saji & tahan lama (Biskuit, Abon, Makanan kaleng)'},
+    {'category': 'Peralatan & Keamanan', 'item': 'Senter tahan air beserta baterai cadangan'},
+    {'category': 'Peralatan & Keamanan', 'item': 'Peluit darurat (untuk meminta pertolongan saat tertimbun)'},
+    {'category': 'Peralatan & Keamanan', 'item': 'Powerbank kapasitas penuh & kabel charger ponsel'},
+    {'category': 'Peralatan & Keamanan', 'item': 'Pakaian ganti tebal, pakaian dalam, dan selimut hangat'},
+    {'category': 'Peralatan & Keamanan', 'item': 'Jas hujan praktis / ponco'},
+    {'category': 'Peralatan & Keamanan', 'item': 'Perlengkapan higienis (Sabun, sikat gigi, pasta gigi, tisu basah)'},
+  ];
+
+  void _initMemoryChecklist() {
+    if (_memoryChecklist.isEmpty) {
+      for (int i = 0; i < _initialChecklistData.length; i++) {
+        _memoryChecklist.add(
+          ChecklistItem(
+            id: i + 1,
+            item: _initialChecklistData[i]['item']!,
+            category: _initialChecklistData[i]['category']!,
+            isChecked: false,
+          ),
+        );
+      }
+    }
+  }
+
+  /// Inisialisasi FFI untuk Desktop (Windows / Linux / macOS).
+  /// Harus dipanggil sebelum runApp() di main().
+  static void initializeFfi() {
+    if (_ffiInitialized) return;
+    try {
+      if (!kIsWeb && (Platform.isWindows || Platform.isLinux || Platform.isMacOS)) {
+        sqfliteFfiInit();
+        databaseFactory = databaseFactoryFfi;
+        _ffiInitialized = true;
+        debugPrint('SQLite FFI initialized successfully for desktop.');
+      }
+    } catch (e) {
+      debugPrint('initializeFfi notice: $e');
+    }
+  }
+
+  /// Mengambil instance factory yang sesuai dengan platform.
+  /// Selalu mengembalikan databaseFactoryFfi di desktop untuk menghindari
+  /// error "databaseFactory not initialized".
+  static DatabaseFactory get _dbFactory {
+    if (!kIsWeb) {
+      try {
+        if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+          // Pastikan FFI selalu terinisialisasi sebelum digunakan
+          if (!_ffiInitialized) {
+            sqfliteFfiInit();
+            databaseFactory = databaseFactoryFfi;
+            _ffiInitialized = true;
+          }
+          return databaseFactoryFfi;
+        }
+      } catch (_) {}
+    }
+    // Android / iOS menggunakan default sqflite factory
+    return databaseFactory;
+  }
+
+  /// Getter database dengan inisialisasi lazy dan proteksi exception
+  Future<Database?> get database async {
+    if (_useMemoryFallback) return null;
+    if (_database != null) return _database!;
+    try {
+      _database = await _initDB('siagabumi.db');
+      return _database;
+    } catch (e) {
+      debugPrint('SQLite initialization failed, switching to memory fallback: $e');
+      _useMemoryFallback = true;
+      return null;
+    }
+  }
+
+  /// Inisialisasi file SQLite database
   Future<Database> _initDB(String filePath) async {
-    final dbPath = await getDatabasesPath();
+    final factory = _dbFactory;
+    final dbPath = await factory.getDatabasesPath();
     final path = join(dbPath, filePath);
 
-    return await openDatabase(
+    return await factory.openDatabase(
       path,
-      version: 1,
-      onCreate: _createDB,
+      options: OpenDatabaseOptions(
+        version: 1,
+        onCreate: _createDB,
+        onOpen: (db) async {
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS watchlist (
+              id TEXT PRIMARY KEY,
+              tanggal TEXT,
+              jam TEXT,
+              datetime TEXT,
+              coordinates TEXT,
+              lintang TEXT,
+              bujur TEXT,
+              magnitude TEXT,
+              kedalaman TEXT,
+              wilayah TEXT,
+              potensi TEXT,
+              dirasakan TEXT,
+              shakemap TEXT,
+              catatan TEXT,
+              saved_at TEXT
+            )
+          ''');
+          await db.execute('''
+            CREATE TABLE IF NOT EXISTS checklist (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              item TEXT NOT NULL,
+              category TEXT NOT NULL,
+              is_checked INTEGER NOT NULL DEFAULT 0
+            )
+          ''');
+        },
+      ),
     );
   }
 
-  /// Membuat tabel `watchlist` dan `checklist` pada saat pertama kali dibuat
   Future<void> _createDB(Database db, int version) async {
-    // 1. Tabel Watchlist (Pantauan Saya)
     await db.execute('''
-      CREATE TABLE watchlist (
+      CREATE TABLE IF NOT EXISTS watchlist (
         id TEXT PRIMARY KEY,
-        tanggal TEXT NOT NULL,
-        jam TEXT NOT NULL,
-        datetime TEXT NOT NULL,
-        coordinates TEXT NOT NULL,
-        lintang TEXT NOT NULL,
-        bujur TEXT NOT NULL,
-        magnitude TEXT NOT NULL,
-        kedalaman TEXT NOT NULL,
-        wilayah TEXT NOT NULL,
+        tanggal TEXT,
+        jam TEXT,
+        datetime TEXT,
+        coordinates TEXT,
+        lintang TEXT,
+        bujur TEXT,
+        magnitude TEXT,
+        kedalaman TEXT,
+        wilayah TEXT,
         potensi TEXT,
         dirasakan TEXT,
         shakemap TEXT,
         catatan TEXT,
-        saved_at TEXT NOT NULL
+        saved_at TEXT
       )
     ''');
 
-    // 2. Tabel Checklist (Tas Siaga Bencana)
     await db.execute('''
-      CREATE TABLE checklist (
+      CREATE TABLE IF NOT EXISTS checklist (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         item TEXT NOT NULL,
         category TEXT NOT NULL,
@@ -63,29 +179,7 @@ class DatabaseHelper {
       )
     ''');
 
-    // Inisialisasi data awal (seeding) untuk checklist tas siaga bencana
-    await _seedChecklist(db);
-  }
-
-  /// Data awal tas siaga bencana sesuai anjuran BNPB
-  Future<void> _seedChecklist(Database db) async {
-    final initialItems = [
-      {'category': 'Dokumen & Finansial', 'item': 'Surat-surat berharga (KK, KTP, Ijazah, Polis Asuransi dlm plastik)'},
-      {'category': 'Dokumen & Finansial', 'item': 'Uang tunai secukupnya untuk kebutuhan darurat'},
-      {'category': 'Medis & Kesehatan', 'item': 'Kotak P3K standar (Kasa, Plester, Antiseptik, Parasetamol)'},
-      {'category': 'Medis & Kesehatan', 'item': 'Obat-obatan pribadi atau resep dokter'},
-      {'category': 'Medis & Kesehatan', 'item': 'Masker medis & pembersih tangan (Hand Sanitizer)'},
-      {'category': 'Logistik & Konsumsi', 'item': 'Air mineral kemasan (minimal 3 hari untuk tiap anggota keluarga)'},
-      {'category': 'Logistik & Konsumsi', 'item': 'Makanan siap saji & tahan lama (Biskuit, Abon, Makanan kaleng)'},
-      {'category': 'Peralatan & Keamanan', 'item': 'Senter tahan air beserta baterai cadangan'},
-      {'category': 'Peralatan & Keamanan', 'item': 'Peluit darurat (untuk meminta pertolongan saat tertimbun)'},
-      {'category': 'Peralatan & Keamanan', 'item': 'Powerbank kapasitas penuh & kabel charger ponsel'},
-      {'category': 'Peralatan & Keamanan', 'item': 'Pakaian ganti tebal, pakaian dalam, dan selimut hangat'},
-      {'category': 'Peralatan & Keamanan', 'item': 'Jas hujan praktis / ponco'},
-      {'category': 'Peralatan & Keamanan', 'item': 'Perlengkapan higienis (Sabun, sikat gigi, pasta gigi, tisu basah)'},
-    ];
-
-    for (final item in initialItems) {
+    for (final item in _initialChecklistData) {
       await db.insert('checklist', {
         'item': item['item'],
         'category': item['category'],
@@ -100,56 +194,114 @@ class DatabaseHelper {
 
   /// Menambahkan gempa ke daftar pantauan
   Future<int> insertWatchlist(Earthquake earthquake) async {
-    final db = await instance.database;
-    return await db.insert(
-      'watchlist',
-      earthquake.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
+    try {
+      final db = await database;
+      if (db != null) {
+        return await db.insert(
+          'watchlist',
+          earthquake.toMap(),
+          conflictAlgorithm: ConflictAlgorithm.replace,
+        );
+      }
+    } catch (e) {
+      debugPrint('SQLite insertWatchlist failed: $e');
+      _useMemoryFallback = true;
+    }
+
+    // Fallback memori
+    _memoryWatchlist.removeWhere((e) => e.id == earthquake.id);
+    _memoryWatchlist.insert(0, earthquake);
+    return 1;
   }
 
-  /// Mengambil semua gempa yang disimpan di pantauan (diurutkan paling baru disimpan)
+  /// Mengambil semua gempa yang disimpan di pantauan
   Future<List<Earthquake>> getAllWatchlist() async {
-    final db = await instance.database;
-    final result = await db.query(
-      'watchlist',
-      orderBy: 'saved_at DESC',
-    );
-    return result.map((map) => Earthquake.fromMap(map)).toList();
+    try {
+      final db = await database;
+      if (db != null) {
+        final result = await db.query(
+          'watchlist',
+          orderBy: 'saved_at DESC',
+        );
+        return result.map((map) => Earthquake.fromMap(map)).toList();
+      }
+    } catch (e) {
+      debugPrint('SQLite getAllWatchlist failed: $e');
+      _useMemoryFallback = true;
+    }
+
+    // Fallback memori
+    return List.from(_memoryWatchlist);
   }
 
   /// Memperbarui catatan pribadi pada gempa tertentu
   Future<int> updateWatchlistNote(String id, String newNote) async {
-    final db = await instance.database;
-    return await db.update(
-      'watchlist',
-      {'catatan': newNote},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    try {
+      final db = await database;
+      if (db != null) {
+        return await db.update(
+          'watchlist',
+          {'catatan': newNote},
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+      }
+    } catch (e) {
+      debugPrint('SQLite updateWatchlistNote failed: $e');
+      _useMemoryFallback = true;
+    }
+
+    // Fallback memori
+    final index = _memoryWatchlist.indexWhere((e) => e.id == id);
+    if (index != -1) {
+      _memoryWatchlist[index] = _memoryWatchlist[index].copyWith(catatan: newNote);
+      return 1;
+    }
+    return 0;
   }
 
   /// Menghapus gempa dari pantauan berdasarkan ID
   Future<int> deleteWatchlist(String id) async {
-    final db = await instance.database;
-    return await db.delete(
-      'watchlist',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    try {
+      final db = await database;
+      if (db != null) {
+        return await db.delete(
+          'watchlist',
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+      }
+    } catch (e) {
+      debugPrint('SQLite deleteWatchlist failed: $e');
+      _useMemoryFallback = true;
+    }
+
+    // Fallback memori
+    _memoryWatchlist.removeWhere((e) => e.id == id);
+    return 1;
   }
 
   /// Memeriksa apakah suatu gempa sudah tersimpan di pantauan
   Future<bool> isSaved(String id) async {
-    final db = await instance.database;
-    final result = await db.query(
-      'watchlist',
-      columns: ['id'],
-      where: 'id = ?',
-      whereArgs: [id],
-      limit: 1,
-    );
-    return result.isNotEmpty;
+    try {
+      final db = await database;
+      if (db != null) {
+        final result = await db.query(
+          'watchlist',
+          columns: ['id'],
+          where: 'id = ?',
+          whereArgs: [id],
+          limit: 1,
+        );
+        return result.isNotEmpty;
+      }
+    } catch (e) {
+      debugPrint('SQLite isSaved failed: $e');
+      _useMemoryFallback = true;
+    }
+
+    // Fallback memori
+    return _memoryWatchlist.any((e) => e.id == id);
   }
 
   // ==========================================
@@ -158,32 +310,70 @@ class DatabaseHelper {
 
   /// Mengambil seluruh daftar checklist tas siaga bencana
   Future<List<ChecklistItem>> getAllChecklist() async {
-    final db = await instance.database;
-    final result = await db.query(
-      'checklist',
-      orderBy: 'id ASC',
-    );
-    return result.map((map) => ChecklistItem.fromMap(map)).toList();
+    try {
+      final db = await database;
+      if (db != null) {
+        final result = await db.query(
+          'checklist',
+          orderBy: 'id ASC',
+        );
+        return result.map((map) => ChecklistItem.fromMap(map)).toList();
+      }
+    } catch (e) {
+      debugPrint('SQLite getAllChecklist failed: $e');
+      _useMemoryFallback = true;
+    }
+
+    // Fallback memori
+    return List.from(_memoryChecklist);
   }
 
   /// Memperbarui status centang checklist
   Future<int> updateChecklistStatus(int id, bool isChecked) async {
-    final db = await instance.database;
-    return await db.update(
-      'checklist',
-      {'is_checked': isChecked ? 1 : 0},
-      where: 'id = ?',
-      whereArgs: [id],
-    );
+    try {
+      final db = await database;
+      if (db != null) {
+        return await db.update(
+          'checklist',
+          {'is_checked': isChecked ? 1 : 0},
+          where: 'id = ?',
+          whereArgs: [id],
+        );
+      }
+    } catch (e) {
+      debugPrint('SQLite updateChecklistStatus failed: $e');
+      _useMemoryFallback = true;
+    }
+
+    // Fallback memori
+    final index = _memoryChecklist.indexWhere((i) => i.id == id);
+    if (index != -1) {
+      _memoryChecklist[index] = _memoryChecklist[index].copyWith(isChecked: isChecked);
+      return 1;
+    }
+    return 0;
   }
 
-  /// Reset semua centang tas siaga ke belum dicentang
+  /// Reset semua centang tas siaga
   Future<int> resetChecklist() async {
-    final db = await instance.database;
-    return await db.update(
-      'checklist',
-      {'is_checked': 0},
-    );
+    try {
+      final db = await database;
+      if (db != null) {
+        return await db.update(
+          'checklist',
+          {'is_checked': 0},
+        );
+      }
+    } catch (e) {
+      debugPrint('SQLite resetChecklist failed: $e');
+      _useMemoryFallback = true;
+    }
+
+    // Fallback memori
+    for (int i = 0; i < _memoryChecklist.length; i++) {
+      _memoryChecklist[i] = _memoryChecklist[i].copyWith(isChecked: false);
+    }
+    return _memoryChecklist.length;
   }
 
   /// Menutup koneksi database

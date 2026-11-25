@@ -69,6 +69,7 @@ class HomeScreen extends StatelessWidget {
             ),
           ],
         ),
+
       ),
       body: RefreshIndicator(
         onRefresh: () => eqProvider.fetchAll(),

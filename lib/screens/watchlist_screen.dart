@@ -4,6 +4,7 @@ import '../models/earthquake.dart';
 import '../providers/watchlist_provider.dart';
 import '../widgets/earthquake_card.dart';
 import '../widgets/empty_view.dart';
+import '../widgets/error_view.dart';
 import '../widgets/loading_view.dart';
 import 'detail_screen.dart';
 
@@ -84,22 +85,40 @@ class WatchlistScreen extends StatelessWidget {
 
   Widget _buildBody(
       BuildContext context, WatchlistProvider provider, ThemeData theme) {
-    if (provider.isLoading) {
+    if (provider.isLoading && provider.watchlist.isEmpty) {
       return const LoadingView(message: 'Memuat data pantauan lokal...');
+    }
+
+    if (provider.errorMessage != null && provider.watchlist.isEmpty) {
+      return ErrorView(
+        message: provider.errorMessage!,
+        onRetry: () => provider.loadWatchlist(),
+      );
     }
 
     final list = provider.watchlist;
 
     if (list.isEmpty) {
-      return EmptyView(
-        icon: Icons.bookmark_border_rounded,
-        title: 'Belum Ada Gempa Dipantau',
-        message:
-            'Simpan gempa dari halaman Beranda atau Daftar Gempa untuk memantau data dan menambahkan catatan pribadi.',
-        action: FilledButton.icon(
-          onPressed: onNavigateToHome,
-          icon: const Icon(Icons.radar_rounded),
-          label: const Text('Jelajahi Gempa'),
+      return RefreshIndicator(
+        onRefresh: () => provider.loadWatchlist(),
+        child: ListView(
+          physics: const AlwaysScrollableScrollPhysics(),
+          children: [
+            SizedBox(
+              height: MediaQuery.of(context).size.height * 0.65,
+              child: EmptyView(
+                icon: Icons.bookmark_border_rounded,
+                title: 'Belum Ada Gempa Dipantau',
+                message:
+                    'Simpan gempa dari halaman Beranda atau Daftar Gempa untuk memantau data dan menambahkan catatan pribadi.',
+                action: FilledButton.icon(
+                  onPressed: onNavigateToHome,
+                  icon: const Icon(Icons.radar_rounded),
+                  label: const Text('Jelajahi Gempa'),
+                ),
+              ),
+            ),
+          ],
         ),
       );
     }
@@ -130,10 +149,13 @@ class WatchlistScreen extends StatelessWidget {
           ),
         ),
         Expanded(
-          child: ListView.builder(
-            padding: const EdgeInsets.only(bottom: 24),
-            itemCount: list.length,
-            itemBuilder: (context, index) {
+          child: RefreshIndicator(
+            onRefresh: () => provider.loadWatchlist(),
+            child: ListView.builder(
+              physics: const AlwaysScrollableScrollPhysics(),
+              padding: const EdgeInsets.only(bottom: 24),
+              itemCount: list.length,
+              itemBuilder: (context, index) {
               final eq = list[index];
 
               return Dismissible(
@@ -238,7 +260,8 @@ class WatchlistScreen extends StatelessWidget {
             },
           ),
         ),
-      ],
-    );
+      ),
+    ],
+  );
   }
 }

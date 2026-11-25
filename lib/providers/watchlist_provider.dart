@@ -32,7 +32,9 @@ class WatchlistProvider with ChangeNotifier {
       _savedIds
         ..clear()
         ..addAll(_watchlist.map((e) => e.id));
+      _errorMessage = null;
     } catch (e) {
+      debugPrint('Error loadWatchlist: $e');
       _errorMessage = 'Gagal memuat pantauan lokal: $e';
     } finally {
       _isLoading = false;
@@ -53,9 +55,11 @@ class WatchlistProvider with ChangeNotifier {
       // Sisipkan di posisi paling awal
       _watchlist.removeWhere((e) => e.id == toSave.id);
       _watchlist.insert(0, toSave);
+      _errorMessage = null;
       notifyListeners();
       return true;
     } catch (e) {
+      debugPrint('Error addToWatchlist: $e');
       _errorMessage = 'Gagal menyimpan ke pantauan: $e';
       notifyListeners();
       return false;

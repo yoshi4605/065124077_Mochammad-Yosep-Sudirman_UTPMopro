@@ -113,6 +113,14 @@ class _DetailScreenState extends State<DetailScreen> {
             behavior: SnackBarBehavior.floating,
           ),
         );
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(provider.errorMessage ?? 'Gagal menyimpan ke pantauan.'),
+            backgroundColor: Colors.red.shade800,
+            behavior: SnackBarBehavior.floating,
+          ),
+        );
       }
     }
   }

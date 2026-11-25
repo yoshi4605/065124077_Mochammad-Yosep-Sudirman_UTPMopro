@@ -6,11 +6,15 @@ import 'providers/checklist_provider.dart';
 import 'providers/earthquake_provider.dart';
 import 'providers/watchlist_provider.dart';
 import 'screens/main_shell.dart';
+import 'services/database_helper.dart';
 import 'utils/constants.dart';
 import 'utils/theme.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+
+  // Inisialisasi SQLite databaseFactory untuk Desktop (Windows, Linux, macOS)
+  DatabaseHelper.initializeFfi();
 
   // Inisialisasi locale bahasa Indonesia untuk format tanggal intl
   await initializeDateFormatting('id_ID', null);
