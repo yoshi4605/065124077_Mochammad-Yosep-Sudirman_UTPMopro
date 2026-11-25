@@ -2,8 +2,6 @@
 
 Aplikasi mobile berbasis Flutter untuk memantau data gempa bumi terkini di seluruh Indonesia secara langsung dari BMKG (Badan Meteorologi, Klimatologi, dan Geofisika), menyimpan riwayat gempa ke database lokal dengan catatan pribadi, serta menyediakan panduan kesiapsiagaan bencana.
 
-> **Tugas Ujian Tengah Praktikum (UTP) - Mobile Programming**  
-> **Opsi Data:** Opsi 3 (Kombinasi Public API + Local Storage - Nilai Plus)
 
 ---
 
